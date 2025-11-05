@@ -1,0 +1,11 @@
+.settings-view {
+  padding: 20px;
+}
+
+.settings-view h1 {
+  font-size: 28px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 20px;
+}
+
