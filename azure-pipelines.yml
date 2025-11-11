@@ -1,5 +1,5 @@
 # Azure Pipeline for Full Stack App (React + Node.js)
-# Deploys to VM: 4.186.24.2
+# Self-Hosted Agent on VM
 
 trigger:
   branches:
@@ -8,12 +8,10 @@ trigger:
       - master
 
 pool:
-  vmImage: 'ubuntu-latest'
+  name: 'VM-Pool'  # Use your self-hosted agent pool
 
 variables:
   NODE_VERSION: '18.x'
-  VM_IP: '4.186.24.2'
-  VM_USER: 'azureuser'
   BACKEND_PATH: '/home/azureuser/backend-dev/server'
   FRONTEND_PATH: '/home/azureuser/frontend-dev/client'
 
@@ -34,20 +32,6 @@ stages:
               cd server
               npm ci --production
             displayName: 'Install Backend Dependencies'
-          
-          - task: ArchiveFiles@2
-            displayName: 'Archive Backend'
-            inputs:
-              rootFolderOrFile: '$(System.DefaultWorkingDirectory)/server'
-              includeRootFolder: false
-              archiveType: 'zip'
-              archiveFile: '$(Build.ArtifactStagingDirectory)/backend.zip'
-          
-          - task: PublishBuildArtifacts@1
-            displayName: 'Publish Backend Artifact'
-            inputs:
-              PathtoPublish: '$(Build.ArtifactStagingDirectory)/backend.zip'
-              ArtifactName: 'backend'
 
       - job: BuildFrontend
         displayName: 'Build Frontend'
@@ -67,139 +51,74 @@ stages:
               cd client
               npm run build
             displayName: 'Build React App'
-          
-          - task: ArchiveFiles@2
-            displayName: 'Archive Frontend'
-            inputs:
-              rootFolderOrFile: '$(System.DefaultWorkingDirectory)/client'
-              includeRootFolder: false
-              archiveType: 'zip'
-              archiveFile: '$(Build.ArtifactStagingDirectory)/frontend.zip'
-          
-          - task: PublishBuildArtifacts@1
-            displayName: 'Publish Frontend Artifact'
-            inputs:
-              PathtoPublish: '$(Build.ArtifactStagingDirectory)/frontend.zip'
-              ArtifactName: 'frontend'
 
   - stage: Deploy
     displayName: 'Deploy to VM'
     dependsOn: Build
     condition: succeeded()
     jobs:
-      - deployment: DeployToVM
+      - job: DeployApp
         displayName: 'Deploy Full Stack App'
-        environment: 'production-vm'
-        strategy:
-          runOnce:
-            deploy:
-              steps:
-                - task: DownloadBuildArtifacts@1
-                  displayName: 'Download All Artifacts'
-                  inputs:
-                    buildType: 'current'
-                    downloadType: 'specific'
-                    downloadPath: '$(System.ArtifactsDirectory)'
-                
-                # Deploy Backend
-                - task: SSH@0
-                  displayName: 'Prepare Backend Deployment'
-                  inputs:
-                    sshEndpoint: 'ProductionVM'
-                    runOptions: 'inline'
-                    inline: |
-                      echo "=== Backend Deployment Starting ==="
-                      
-                      # Backup existing backend
-                      if [ -d "$(BACKEND_PATH)" ]; then
-                        echo "Backing up backend..."
-                        sudo cp -r $(BACKEND_PATH) $(BACKEND_PATH)_backup_$(date +%Y%m%d_%H%M%S)
-                      fi
-                      
-                      # Stop backend PM2 process
-                      echo "Stopping backend..."
-                      pm2 stop backend-dev || true
-                    readyTimeout: '20000'
-                
-                - task: CopyFilesOverSSH@0
-                  displayName: 'Deploy Backend Files'
-                  inputs:
-                    sshEndpoint: 'ProductionVM'
-                    sourceFolder: '$(System.ArtifactsDirectory)/backend'
-                    contents: 'backend.zip'
-                    targetFolder: '/tmp'
-                
-                - task: SSH@0
-                  displayName: 'Extract and Start Backend'
-                  inputs:
-                    sshEndpoint: 'ProductionVM'
-                    runOptions: 'inline'
-                    inline: |
-                      # Extract backend
-                      cd $(BACKEND_PATH)
-                      unzip -o /tmp/backend.zip
-                      rm /tmp/backend.zip
-                      
-                      # Install dependencies
-                      npm ci --production
-                      
-                      # Start backend
-                      echo "Starting backend..."
-                      pm2 restart backend-dev
-                      pm2 save
-                      
-                      echo "✅ Backend deployed successfully!"
-                    readyTimeout: '20000'
-                
-                # Deploy Frontend
-                - task: SSH@0
-                  displayName: 'Prepare Frontend Deployment'
-                  inputs:
-                    sshEndpoint: 'ProductionVM'
-                    runOptions: 'inline'
-                    inline: |
-                      echo "=== Frontend Deployment Starting ==="
-                      
-                      # Backup existing frontend
-                      if [ -d "$(FRONTEND_PATH)" ]; then
-                        echo "Backing up frontend..."
-                        sudo cp -r $(FRONTEND_PATH) $(FRONTEND_PATH)_backup_$(date +%Y%m%d_%H%M%S)
-                      fi
-                      
-                      # Stop frontend PM2 process
-                      echo "Stopping frontend..."
-                      pm2 stop frontend-dev || true
-                    readyTimeout: '20000'
-                
-                - task: CopyFilesOverSSH@0
-                  displayName: 'Deploy Frontend Files'
-                  inputs:
-                    sshEndpoint: 'ProductionVM'
-                    sourceFolder: '$(System.ArtifactsDirectory)/frontend'
-                    contents: 'frontend.zip'
-                    targetFolder: '/tmp'
-                
-                - task: SSH@0
-                  displayName: 'Extract and Start Frontend'
-                  inputs:
-                    sshEndpoint: 'ProductionVM'
-                    runOptions: 'inline'
-                    inline: |
-                      # Extract frontend
-                      cd $(FRONTEND_PATH)
-                      unzip -o /tmp/frontend.zip
-                      rm /tmp/frontend.zip
-                      
-                      # Install dependencies
-                      npm ci
-                      
-                      # Start frontend
-                      echo "Starting frontend..."
-                      pm2 restart frontend-dev
-                      pm2 save
-                      
-                      echo "✅ Frontend deployed successfully!"
-                      echo ""
-                      echo "🚀 Application is now live at http://$(VM_IP):3000"
-                      pm2 status
-                    readyTimeout: '20000'
+        steps:
+          # Deploy Backend
+          - script: |
+              echo "=== Deploying Backend ==="
+              
+              # Backup existing backend
+              if [ -d "$(BACKEND_PATH)" ]; then
+                echo "Creating backup..."
+                cp -r $(BACKEND_PATH) $(BACKEND_PATH)_backup_$(date +%Y%m%d_%H%M%S)
+              fi
+              
+              # Stop backend
+              echo "Stopping backend..."
+              pm2 stop backend-dev || true
+              
+              # Copy new backend files
+              echo "Copying backend files..."
+              cp -r $(Build.SourcesDirectory)/server/* $(BACKEND_PATH)/
+              
+              # Install dependencies
+              cd $(BACKEND_PATH)
+              npm ci --production
+              
+              # Restart backend
+              echo "Starting backend..."
+              pm2 restart backend-dev
+              pm2 save
+              
+              echo "✅ Backend deployed successfully!"
+            displayName: 'Deploy Backend'
+          
+          # Deploy Frontend
+          - script: |
+              echo "=== Deploying Frontend ==="
+              
+              # Backup existing frontend
+              if [ -d "$(FRONTEND_PATH)" ]; then
+                echo "Creating backup..."
+                cp -r $(FRONTEND_PATH) $(FRONTEND_PATH)_backup_$(date +%Y%m%d_%H%M%S)
+              fi
+              
+              # Stop frontend
+              echo "Stopping frontend..."
+              pm2 stop frontend-dev || true
+              
+              # Copy new frontend files
+              echo "Copying frontend files..."
+              cp -r $(Build.SourcesDirectory)/client/* $(FRONTEND_PATH)/
+              
+              # Install dependencies
+              cd $(FRONTEND_PATH)
+              npm ci
+              
+              # Restart frontend
+              echo "Starting frontend..."
+              pm2 restart frontend-dev
+              pm2 save
+              
+              echo "✅ Frontend deployed successfully!"
+              echo ""
+              echo "🚀 Application is now live at http://4.186.24.2:3000"
+              pm2 status
+            displayName: 'Deploy Frontend'
